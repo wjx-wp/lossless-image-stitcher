@@ -8,7 +8,7 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/wjx-wp/lossless-image-stitcher/releases/latest) 下载最新版 `无损拼图.exe`。程序为单个 EXE，不需要安装，也不会上传图片；所有处理均在本机完成。
+前往 [Releases](https://github.com/wjx-wp/lossless-image-stitcher/releases/latest) 下载最新版 `LosslessStitcher-v*.exe`。程序为单个 EXE，不需要安装，也不会上传图片；所有处理均在本机完成。
 
 运行环境：Windows 10/11，系统需具备 .NET Framework 4 运行环境。
 
