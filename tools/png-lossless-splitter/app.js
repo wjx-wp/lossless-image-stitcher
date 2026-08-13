@@ -3,117 +3,132 @@
   const drop=$('#drop'), fileInput=$('#file'), work=$('#work');
   const editor=$('#editor'), ectx=editor.getContext('2d',{willReadFrequently:true,alpha:true});
   const rawCanvas=document.createElement('canvas'), rawCtx=rawCanvas.getContext('2d',{willReadFrequently:true,alpha:true});
-  let W=0,H=0,sourceName='image',originalData=null,workingData=null,splits=[],mode='none',dragStart=null,brushDrawing=false,undoStack=[];
+
+  let W=0,H=0,sourceName='image',originalData=null,workingData=null;
+  let splitsX=[],splitsY=[],mode='none',dragStart=null,brushDrawing=false,undoStack=[];
   const MAX_UNDO=12;
 
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   const baseName=n=>(n||'image').replace(/\.[^.]+$/,'');
-  const threshold=()=>$('#alphaNoise').checked?2:0;
+  const detectThreshold=()=>$('#alphaNoise').checked?2:0;
   const minGap=()=>Math.max(2,parseInt($('#minGap').value||'24',10));
+  const centerOn=()=>$('#centerContent').checked;
+  const trimOn=()=>$('#trim').checked;
 
-  function cloneImageData(src){ return new ImageData(new Uint8ClampedArray(src.data),src.width,src.height); }
-  function pushUndo(){ if(!workingData)return; undoStack.push(new Uint8ClampedArray(workingData.data)); if(undoStack.length>MAX_UNDO)undoStack.shift(); }
-  function restoreUndo(){ if(!undoStack.length)return; workingData.data.set(undoStack.pop()); rebuildAfterEdit(); }
+  function cloneImageData(src){return new ImageData(new Uint8ClampedArray(src.data),src.width,src.height);}
+  function pushUndo(){if(!workingData)return;undoStack.push(new Uint8ClampedArray(workingData.data));if(undoStack.length>MAX_UNDO)undoStack.shift();}
+  function restoreUndo(){if(!undoStack.length)return;workingData.data.set(undoStack.pop());rebuildAfterEdit();}
 
   function loadFile(file){
     if(!file)return;
-    if(file.type && file.type!=='image/png'){alert('为保证流程可控，本工具 v2.0 只接受 PNG。');return;}
+    if(file.type && file.type!=='image/png'){alert('为保证无损流程可控，本工具 v2.2 只接受 PNG。');return;}
     sourceName=baseName(file.name);
-    const url=URL.createObjectURL(file), img=new Image();
+    const url=URL.createObjectURL(file),img=new Image();
     img.onload=()=>{
       W=img.naturalWidth;H=img.naturalHeight;
       rawCanvas.width=W;rawCanvas.height=H;rawCtx.clearRect(0,0,W,H);rawCtx.imageSmoothingEnabled=false;rawCtx.drawImage(img,0,0,W,H);
-      originalData=rawCtx.getImageData(0,0,W,H);workingData=cloneImageData(originalData);undoStack=[];splits=[];
-      URL.revokeObjectURL(url); work.classList.remove('hidden'); autoDetectSplits(); rebuildAfterEdit(false);
+      originalData=rawCtx.getImageData(0,0,W,H);workingData=cloneImageData(originalData);
+      splitsX=[];splitsY=[];undoStack=[];mode='none';
+      URL.revokeObjectURL(url);work.classList.remove('hidden');
+      autoDetectX();rebuildAfterEdit(false);updateIcoUI();
     };
-    img.onerror=()=>alert('PNG 读取失败。'); img.src=url;
+    img.onerror=()=>alert('PNG 读取失败。');img.src=url;
   }
 
-  function rebuildRaw(){ rawCanvas.width=W;rawCanvas.height=H;rawCtx.putImageData(workingData,0,0); }
-  function rebuildAfterEdit(redetect=false){ rebuildRaw(); if(redetect)autoDetectSplits(); drawEditor(); renderAll(); }
+  function rebuildRaw(){rawCanvas.width=W;rawCanvas.height=H;rawCtx.putImageData(workingData,0,0);}
+  function rebuildAfterEdit(redetect=false){rebuildRaw();if(redetect)autoDetectX();drawEditor();renderAll();}
 
-  function columnAnalysis(){
-    const occ=new Uint32Array(W),mass=new Float64Array(W),t=threshold(),d=workingData.data;
-    for(let y=0;y<H;y++){let i=(y*W)*4;for(let x=0;x<W;x++,i+=4){const a=d[i+3];if(a>t)occ[x]++;mass[x]+=a;}}
-    return {occ,mass};
-  }
-  function autoDetectSplits(){
-    if(!workingData)return;
-    const {occ,mass}=columnAnalysis(),gap=minGap();
-    // 分割检测允许每列存在极少量孤立噪点；这里只影响“检测”，不会删除这些像素。
-    const noisePixels=Math.max(2,Math.floor(H*.003)),runs=[];let s=-1;
-    for(let x=0;x<W;x++){
-      const emptyLike=occ[x]<=noisePixels;
-      if(emptyLike){if(s<0)s=x;}
-      else if(s>=0){runs.push([s,x-1]);s=-1;}
+  function axisAnalysis(axis){
+    const len=axis==='x'?W:H,cross=axis==='x'?H:W,occ=new Uint32Array(len),mass=new Float64Array(len),t=detectThreshold(),d=workingData.data;
+    if(axis==='x'){
+      for(let y=0;y<H;y++){let i=(y*W)*4;for(let x=0;x<W;x++,i+=4){const a=d[i+3];if(a>t)occ[x]++;mass[x]+=a;}}
+    }else{
+      for(let y=0;y<H;y++){let count=0,sum=0,i=(y*W)*4;for(let x=0;x<W;x++,i+=4){const a=d[i+3];if(a>t)count++;sum+=a;}occ[y]=count;mass[y]=sum;}
     }
-    if(s>=0)runs.push([s,W-1]);
+    return {len,cross,occ,mass};
+  }
 
-    let total=0;for(const v of mass)total+=v;
-    if(total<=0){splits=[];updateSplitUI();return;}
-    const prefix=new Float64Array(W);let acc=0;for(let x=0;x<W;x++){acc+=mass[x];prefix[x]=acc;}
+  function detectAxis(axis,minSideFraction){
+    const {len,cross,occ,mass}=axisAnalysis(axis),gap=minGap();
+    const noisePixels=Math.max(2,Math.floor(cross*.003)),runs=[];let s=-1;
+    for(let p=0;p<len;p++){
+      const emptyLike=occ[p]<=noisePixels;
+      if(emptyLike){if(s<0)s=p;}
+      else if(s>=0){runs.push([s,p-1]);s=-1;}
+    }
+    if(s>=0)runs.push([s,len-1]);
+
+    let total=0;for(const v of mass)total+=v;if(total<=0)return[];
+    const prefix=new Float64Array(len);let acc=0;for(let p=0;p<len;p++){acc+=mass[p];prefix[p]=acc;}
     let candidates=[];
     for(const [a,b] of runs){
-      const len=b-a+1;if(len<gap)continue;
-      const mid=Math.round((a+b)/2),left=mid>0?prefix[mid-1]:0,frac=left/total;
-      // 过滤只切到边缘零星文字/噪点的假间隙；真正图块分界两侧都应有可观内容。
-      if(frac<.02||frac>.98)continue;
-      candidates.push({a,b,len,mid,frac});
+      const runLen=b-a+1;if(runLen<gap)continue;
+      const mid=Math.round((a+b)/2),before=mid>0?prefix[mid-1]:0,frac=before/total;
+      if(frac<minSideFraction||frac>1-minSideFraction)continue;
+      candidates.push({a,b,len:runLen,mid,frac});
     }
-    // 同一真实分界附近可能被 1~2 个噪点切成多段空隙。
-    // 如果两段前后的累计图像质量几乎相同，就视为同一分界，只保留最宽的那段。
     const groups=[];
     for(const c of candidates){
       const g=groups[groups.length-1];
       if(!g||Math.abs(c.frac-g[g.length-1].frac)>.005)groups.push([c]);else g.push(c);
     }
-    candidates=groups.map(g=>g.reduce((best,c)=>c.len>best.len?c:best,g[0]));
-    splits=dedupeSplits(candidates.map(c=>c.mid));updateSplitUI();
+    return dedupe(groups.map(g=>g.reduce((best,c)=>c.len>best.len?c:best,g[0]).mid),len);
   }
-  function dedupeSplits(arr){
-    const sorted=[...arr].map(v=>clamp(Math.round(v),1,W-1)).sort((a,b)=>a-b),out=[];
-    for(const x of sorted)if(!out.length||x-out[out.length-1]>=2)out.push(x);return out;
+
+  function dedupe(arr,len){
+    const sorted=[...arr].map(v=>clamp(Math.round(v),1,len-1)).sort((a,b)=>a-b),out=[];
+    for(const p of sorted)if(!out.length||p-out[out.length-1]>=2)out.push(p);return out;
   }
-  function setHalf(){splits=[Math.floor(W/2)];updateSplitUI();drawEditor();renderAll();}
+
+  function autoDetectX(){if(!workingData)return;splitsX=detectAxis('x',.025);splitsY=[];updateSplitUI();}
+  function autoDetectGrid(){if(!workingData)return;splitsX=detectAxis('x',.05);splitsY=detectAxis('y',.10);updateSplitUI();drawEditor();renderAll();}
+  function setHalf(){splitsX=[Math.floor(W/2)];splitsY=[];updateSplitUI();drawEditor();renderAll();}
+
   function updateSplitUI(){
     const box=$('#splitList');box.innerHTML='';
-    if(!splits.length){box.innerHTML='<span class="small">当前没有分割线，将作为 1 张图片输出。</span>';return;}
-    splits.forEach((x,i)=>{const c=document.createElement('span');c.className='chip';c.innerHTML=`分割 ${i+1}: X=${x}px <button title="删除">×</button>`;c.querySelector('button').onclick=()=>{splits.splice(i,1);updateSplitUI();drawEditor();renderAll();};box.appendChild(c);});
+    if(!splitsX.length&&!splitsY.length){box.innerHTML='<span class="small">当前没有分割线，将作为 1 张图片输出。</span>';return;}
+    splitsX.forEach((x,i)=>{const c=document.createElement('span');c.className='chip';c.innerHTML=`竖切 ${i+1}: X=${x}px <button title="删除">×</button>`;c.querySelector('button').onclick=()=>{splitsX.splice(i,1);updateSplitUI();drawEditor();renderAll();};box.appendChild(c);});
+    splitsY.forEach((y,i)=>{const c=document.createElement('span');c.className='chip y';c.innerHTML=`横切 ${i+1}: Y=${y}px <button title="删除">×</button>`;c.querySelector('button').onclick=()=>{splitsY.splice(i,1);updateSplitUI();drawEditor();renderAll();};box.appendChild(c);});
   }
 
-  function boundaries(){return [0,...dedupeSplits(splits),W];}
-  function regionList(){const b=boundaries(),out=[];for(let i=0;i<b.length-1;i++)if(b[i+1]-b[i]>0)out.push({x0:b[i],x1:b[i+1],index:i});return out;}
+  function boundariesX(){return[0,...dedupe(splitsX,W),W];}
+  function boundariesY(){return[0,...dedupe(splitsY,H),H];}
+  function regionList(){
+    const bx=boundariesX(),by=boundariesY(),out=[];let index=0;
+    for(let row=0;row<by.length-1;row++)for(let col=0;col<bx.length-1;col++){
+      if(bx[col+1]>bx[col]&&by[row+1]>by[row])out.push({x0:bx[col],x1:bx[col+1],y0:by[row],y1:by[row+1],row,col,index:index++});
+    }
+    return out;
+  }
 
-  function bbox(x0,x1,y0=0,y1=H,t=0){
+  function bbox(x0,x1,y0,y1,t=0){
     const d=workingData.data;let minX=x1,minY=y1,maxX=-1,maxY=-1;
     for(let y=y0;y<y1;y++){let i=(y*W+x0)*4+3;for(let x=x0;x<x1;x++,i+=4){if(d[i]>t){if(x<minX)minX=x;if(x>maxX)maxX=x;if(y<minY)minY=y;if(y>maxY)maxY=y;}}}
     return maxX<minX?null:{x:minX,y:minY,w:maxX-minX+1,h:maxY-minY+1};
   }
 
   function detectTextZones(){
-    const zones=[],t=threshold(),d=workingData.data;
+    const zones=[],t=detectThreshold(),d=workingData.data;
     for(const r of regionList()){
-      const b=bbox(r.x0,r.x1,0,H,t);if(!b||b.h<20)continue;
+      const b=bbox(r.x0,r.x1,r.y0,r.y1,t);if(!b||b.h<20)continue;
       const occ=new Uint32Array(b.h);
       for(let yy=0;yy<b.h;yy++){const y=b.y+yy;let i=(y*W+b.x)*4+3;for(let xx=0;xx<b.w;xx++,i+=4)if(d[i]>t)occ[yy]++;}
       const start=Math.floor(b.h*.42),end=Math.floor(b.h*.92);let run=-1,candidates=[];
       for(let yy=start;yy<=end;yy++){
         if(occ[yy]===0){if(run<0)run=yy;}
         else if(run>=0){candidates.push([run,yy-1]);run=-1;}
-      }if(run>=0)candidates.push([run,end]);
-      candidates=candidates.filter(([a,z])=>z-a+1>=Math.max(3,Math.floor(H*.003)) && a>0 && z<b.h-1);
-      if(!candidates.length)continue;
+      }
+      if(run>=0)candidates.push([run,end]);
+      candidates=candidates.filter(([a,z])=>z-a+1>=Math.max(3,Math.floor(H*.003))&&a>0&&z<b.h-1);
       candidates.sort((p,q)=>(q[1]-q[0])-(p[1]-p[0]));
       let chosen=null;
       for(const g of candidates){
         const belowStart=g[1]+1;let belowPixels=0,abovePixels=0;
         for(let yy=0;yy<g[0];yy++)abovePixels+=occ[yy];for(let yy=belowStart;yy<b.h;yy++)belowPixels+=occ[yy];
-        const belowHeight=b.h-belowStart;
-        if(abovePixels>0 && belowPixels>0 && belowHeight<=b.h*.38){chosen=g;break;}
+        if(abovePixels>0&&belowPixels>0&&(b.h-belowStart)<=b.h*.38){chosen=g;break;}
       }
       if(!chosen)continue;
-      const cutY=b.y+chosen[1]+1;
-      zones.push({x:b.x,y:cutY,w:b.w,h:(b.y+b.h)-cutY});
+      const cutY=b.y+chosen[1]+1;zones.push({x:b.x,y:cutY,w:b.w,h:(b.y+b.h)-cutY});
     }
     return zones;
   }
@@ -135,26 +150,33 @@
   }
 
   function canvasPoint(ev){const rect=editor.getBoundingClientRect();return{x:clamp((ev.clientX-rect.left)*W/rect.width,0,W),y:clamp((ev.clientY-rect.top)*H/rect.height,0,H)};}
-  function setMode(m){mode=m;dragStart=null;brushDrawing=false;['splitMode','rectErase','brushErase'].forEach(id=>$('#'+id).classList.remove('active'));if(m==='split')$('#splitMode').classList.add('active');if(m==='rect')$('#rectErase').classList.add('active');if(m==='brush')$('#brushErase').classList.add('active');$('#modeTip').textContent=m==='split'?'点击原图任意位置添加分割线':m==='rect'?'拖出矩形，矩形内像素变透明':m==='brush'?'按住拖动画笔删除':'普通预览模式';drawEditor();}
+  function setMode(m){
+    mode=m;dragStart=null;brushDrawing=false;
+    ['splitXMode','splitYMode','rectErase','brushErase'].forEach(id=>$('#'+id).classList.remove('active'));
+    if(m==='splitX')$('#splitXMode').classList.add('active');if(m==='splitY')$('#splitYMode').classList.add('active');if(m==='rect')$('#rectErase').classList.add('active');if(m==='brush')$('#brushErase').classList.add('active');
+    $('#modeTip').textContent=m==='splitX'?'点击原图添加竖向分割线':m==='splitY'?'点击原图添加横向分割线':m==='rect'?'拖出矩形，矩形内像素变透明':m==='brush'?'按住拖动画笔删除':'普通预览模式';drawEditor();
+  }
 
   function drawEditor(extra=null){
     if(!workingData)return;editor.width=W;editor.height=H;ectx.clearRect(0,0,W,H);ectx.putImageData(workingData,0,0);
-    ectx.save();ectx.lineWidth=Math.max(2,W/700);ectx.setLineDash([Math.max(8,W/140),Math.max(5,W/220)]);ectx.strokeStyle='#2563eb';
-    for(const x of splits){ectx.beginPath();ectx.moveTo(x,0);ectx.lineTo(x,H);ectx.stroke();}
+    ectx.save();ectx.lineWidth=Math.max(2,W/700);ectx.setLineDash([Math.max(8,W/140),Math.max(5,W/220)]);
+    ectx.strokeStyle='#2563eb';for(const x of splitsX){ectx.beginPath();ectx.moveTo(x,0);ectx.lineTo(x,H);ectx.stroke();}
+    ectx.strokeStyle='#d97706';for(const y of splitsY){ectx.beginPath();ectx.moveTo(0,y);ectx.lineTo(W,y);ectx.stroke();}
     ectx.setLineDash([]);
-    if(extra&&extra.type==='rect'){ectx.fillStyle='rgba(220,38,38,.14)';ectx.strokeStyle='#dc2626';ectx.lineWidth=Math.max(2,W/700);ectx.fillRect(extra.x,extra.y,extra.w,extra.h);ectx.strokeRect(extra.x,extra.y,extra.w,extra.h);}
+    if(extra&&extra.type==='rect'){ectx.fillStyle='rgba(220,38,38,.14)';ectx.strokeStyle='#dc2626';ectx.fillRect(extra.x,extra.y,extra.w,extra.h);ectx.strokeRect(extra.x,extra.y,extra.w,extra.h);}
     ectx.restore();
   }
 
   editor.addEventListener('pointerdown',ev=>{
     if(mode==='none')return;editor.setPointerCapture(ev.pointerId);const p=canvasPoint(ev);
-    if(mode==='split'){splits.push(p.x);splits=dedupeSplits(splits);updateSplitUI();drawEditor();renderAll();return;}
+    if(mode==='splitX'){splitsX=dedupe([...splitsX,p.x],W);updateSplitUI();drawEditor();renderAll();return;}
+    if(mode==='splitY'){splitsY=dedupe([...splitsY,p.y],H);updateSplitUI();drawEditor();renderAll();return;}
     if(mode==='rect'){dragStart=p;drawEditor({type:'rect',x:p.x,y:p.y,w:0,h:0});}
     if(mode==='brush'){pushUndo();brushDrawing=true;eraseCircle(p.x,p.y,Math.max(1,parseInt($('#brushSize').value||'28',10))/2);rebuildRaw();drawEditor();}
   });
   editor.addEventListener('pointermove',ev=>{
     const p=canvasPoint(ev);
-    if(mode==='rect'&&dragStart){drawEditor({type:'rect',x:dragStart.x,y:dragStart.y,w:p.x-dragStart.x,h:p.y-dragStart.y});}
+    if(mode==='rect'&&dragStart)drawEditor({type:'rect',x:dragStart.x,y:dragStart.y,w:p.x-dragStart.x,h:p.y-dragStart.y});
     if(mode==='brush'&&brushDrawing){eraseCircle(p.x,p.y,Math.max(1,parseInt($('#brushSize').value||'28',10))/2);rebuildRaw();drawEditor();}
   });
   editor.addEventListener('pointerup',ev=>{
@@ -163,46 +185,137 @@
     if(mode==='brush'&&brushDrawing){brushDrawing=false;rebuildAfterEdit(false);}
   });
 
-  function outputRects(){
-    const trim=$('#trim').checked,pad=Math.max(0,parseInt($('#padding').value||'0',10)),regs=regionList();let rects=[];
-    for(const r of regs){const b=trim?bbox(r.x0,r.x1):{x:r.x0,y:0,w:r.x1-r.x0,h:H};rects.push(b||{x:r.x0,y:0,w:1,h:1,empty:true});}
-    const maxW=Math.max(...rects.map(r=>r.w)),maxH=Math.max(...rects.map(r=>r.h));return{rects,outW:maxW+pad*2,outH:maxH+pad*2,pad};
+  function outputPlan(){
+    const pad=Math.max(0,parseInt($('#padding').value||'0',10)),items=[];
+    for(const cell of regionList()){
+      const content=bbox(cell.x0,cell.x1,cell.y0,cell.y1,0);if(!content)continue;
+      const cellRect={x:cell.x0,y:cell.y0,w:cell.x1-cell.x0,h:cell.y1-cell.y0};
+      const copy=trimOn()?content:cellRect;items.push({cell,content,copy});
+    }
+    if(!items.length)return{items:[],outW:1,outH:1,pad};
+    const maxW=Math.max(...items.map(v=>v.copy.w)),maxH=Math.max(...items.map(v=>v.copy.h));
+    return{items,outW:maxW+pad*2,outH:maxH+pad*2,pad};
   }
 
-  function makeOutputCanvas(rect,outW,outH){
-    const transparent=document.createElement('canvas');transparent.width=outW;transparent.height=outH;const tc=transparent.getContext('2d',{alpha:true});tc.clearRect(0,0,outW,outH);
-    if(!rect.empty){const data=rawCtx.getImageData(rect.x,rect.y,rect.w,rect.h),dx=Math.floor((outW-rect.w)/2),dy=Math.floor((outH-rect.h)/2);tc.putImageData(data,dx,dy);}
-    if($('#bgMode').value==='transparent')return transparent;
-    const solid=document.createElement('canvas');solid.width=outW;solid.height=outH;const sc=solid.getContext('2d',{alpha:false});sc.fillStyle=$('#bgColor').value;sc.fillRect(0,0,outW,outH);sc.drawImage(transparent,0,0);return solid;
+  function makeTransparentOutput(item,outW,outH,pad){
+    const c=document.createElement('canvas');c.width=outW;c.height=outH;const ctx=c.getContext('2d',{alpha:true});ctx.clearRect(0,0,outW,outH);
+    const {copy,content}=item,data=rawCtx.getImageData(copy.x,copy.y,copy.w,copy.h);
+    let dx=pad,dy=pad;
+    if(centerOn()){
+      if(trimOn()){
+        dx=Math.floor((outW-copy.w)/2);dy=Math.floor((outH-copy.h)/2);
+      }else{
+        dx=Math.floor((outW-content.w)/2)-(content.x-copy.x);
+        dy=Math.floor((outH-content.h)/2)-(content.y-copy.y);
+      }
+    }
+    ctx.putImageData(data,dx,dy);return c;
   }
+
+  function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
+  function applyBackground(base){
+    if($('#bgMode').value==='transparent')return base;
+    const c=document.createElement('canvas');c.width=base.width;c.height=base.height;const ctx=c.getContext('2d',{alpha:false}),[br,bg,bb]=hexToRgb($('#bgColor').value);
+    const src=base.getContext('2d').getImageData(0,0,base.width,base.height),d=src.data;
+    for(let i=0;i<d.length;i+=4){const a=d[i+3]/255;d[i]=Math.round(d[i]*a+br*(1-a));d[i+1]=Math.round(d[i+1]*a+bg*(1-a));d[i+2]=Math.round(d[i+2]*a+bb*(1-a));d[i+3]=255;}
+    ctx.putImageData(src,0,0);return c;
+  }
+  function makeOutputCanvas(item,outW,outH,pad){return applyBackground(makeTransparentOutput(item,outW,outH,pad));}
+
+  function blankCanvas(w,h){
+    const c=document.createElement('canvas');c.width=w;c.height=h;const ctx=c.getContext('2d',{alpha:$('#bgMode').value==='transparent'});
+    if($('#bgMode').value==='solid'){ctx.fillStyle=$('#bgColor').value;ctx.fillRect(0,0,w,h);}else ctx.clearRect(0,0,w,h);return c;
+  }
+  function padCanvasLossless(base,target){
+    if(target<base.width||target<base.height)throw new Error('target smaller than source');
+    const c=blankCanvas(target,target),ctx=c.getContext('2d'),data=base.getContext('2d').getImageData(0,0,base.width,base.height);
+    ctx.putImageData(data,Math.floor((target-base.width)/2),Math.floor((target-base.height)/2));return c;
+  }
+  function squareCanvasLossless(base){return padCanvasLossless(base,Math.max(base.width,base.height));}
+  function resizeCanvasCompat(base,target){
+    const c=blankCanvas(target,target),ctx=c.getContext('2d');ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(base,0,0,target,target);return c;
+  }
+
+  function selectedIcoSizes(){return[...document.querySelectorAll('.icoSize:checked')].map(e=>parseInt(e.value,10)).filter(v=>v>=1&&v<=256).sort((a,b)=>a-b);}
+  function icoMode(){return $('#icoMode').value;}
+  function exportMode(){return $('#exportMode').value;}
+  function canvasBytes(c){return new Promise(res=>c.toBlob(async b=>res(new Uint8Array(await b.arrayBuffer())),'image/png'));}
+
+  async function buildIco(base){
+    const square=squareCanvasLossless(base),side=square.width,mode=icoMode(),chosen=selectedIcoSizes();
+    if(mode==='strict'){
+      if(side>256)throw new Error(`严格无损 ICO 不可生成：当前方形画布 ${side}px > 256px。`);
+      const sizes=[...new Set([side,...chosen.filter(s=>s>=side)])].sort((a,b)=>a-b),entries=[];
+      for(const size of sizes){const layer=size===side?square:padCanvasLossless(square,size);entries.push({size,data:await canvasBytes(layer)});}
+      return{blob:PNGSplitterBinary.makeIco(entries),sizes,lossless:true};
+    }
+    const sizes=chosen.length?chosen:[16,32,48,256],entries=[];
+    for(const size of sizes){const layer=size===side?square:resizeCanvasCompat(square,size);entries.push({size,data:await canvasBytes(layer)});}
+    return{blob:PNGSplitterBinary.makeIco(entries),sizes,lossless:false};
+  }
+
+  function saveBlob(blob,name){const a=document.createElement('a'),u=URL.createObjectURL(blob);a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000);}
+  function downloadPng(c,name){c.toBlob(blob=>blob&&saveBlob(blob,name),'image/png');}
+  async function downloadIco(c,name){try{const result=await buildIco(c);saveBlob(result.blob,name);}catch(e){alert(e.message);}}
+
+  function updateIcoUI(){const visible=exportMode()!=='png';$('#icoOptions').classList.toggle('hidden',!visible);}
 
   function renderAll(){
-    if(!workingData)return;rebuildRaw();updateSplitUI();
-    const {rects,outW,outH}=outputRects(),pre=$('#previews');pre.innerHTML='';
-    rects.forEach((r,i)=>{
-      const c=makeOutputCanvas(r,outW,outH),card=document.createElement('div');card.className='previewCard';
+    if(!workingData)return;rebuildRaw();updateSplitUI();updateIcoUI();
+    const {items,outW,outH,pad}=outputPlan(),pre=$('#previews');pre.innerHTML='';
+    const side=Math.max(outW,outH),strictIcoOk=side<=256;
+    items.forEach((item,i)=>{
+      const c=makeOutputCanvas(item,outW,outH,pad),card=document.createElement('div');card.className='previewCard';
       const title=document.createElement('div');title.className='previewTitle';title.innerHTML=`<b>图 ${String(i+1).padStart(2,'0')}</b><span class="small">${outW} × ${outH}</span>`;
       const wrap=document.createElement('div');wrap.className='previewCanvasWrap';wrap.appendChild(c);
-      const row=document.createElement('div');row.style='margin-top:9px';const btn=document.createElement('button');btn.className='primary';btn.textContent='下载 PNG';btn.onclick=()=>downloadCanvas(c,`${sourceName}-${String(i+1).padStart(2,'0')}.png`);row.appendChild(btn);
+      const row=document.createElement('div');row.style='margin-top:9px;display:flex;gap:8px;flex-wrap:wrap';
+      if(exportMode()==='png'||exportMode()==='both'){
+        const b=document.createElement('button');b.className='primary';b.textContent='下载 PNG';b.onclick=()=>downloadPng(c,`${sourceName}-${String(i+1).padStart(2,'0')}.png`);row.appendChild(b);
+      }
+      if(exportMode()==='ico'||exportMode()==='both'){
+        const b=document.createElement('button');b.className='good';b.textContent=icoMode()==='strict'?'下载 ICO（严格）':'下载 ICO（兼容多尺寸）';
+        b.disabled=icoMode()==='strict'&&!strictIcoOk;b.onclick=()=>downloadIco(c,`${sourceName}-${String(i+1).padStart(2,'0')}${icoMode()==='compat'?'-compat':''}.ico`);row.appendChild(b);
+      }
       card.append(title,wrap,row);pre.appendChild(card);
     });
-    $('#stats').innerHTML=`原图：<b>${W} × ${H}</b>　｜　分割线：<b>${splits.length}</b> 条　｜　当前输出：<b>${rects.length}</b> 张`;
-    $('#outputInfo').innerHTML=`统一输出尺寸：<b>${outW} × ${outH}</b> px　｜　背景：<b>${$('#bgMode').value==='transparent'?'透明 Alpha':'纯色 '+$('#bgColor').value}</b>　｜　内容缩放：<b>0 次</b>`;
+    const grid=`${splitsY.length+1} 行 × ${splitsX.length+1} 列`;
+    $('#stats').innerHTML=`原图：<b>${W} × ${H}</b>　｜　分割结构：<b>${grid}</b>　｜　非空输出：<b>${items.length}</b> 张`;
+    const icoText=icoMode()==='strict'?(strictIcoOk?`严格无损可用，原始方形 ${side}px`:`严格无损不可用：${side}px > 256px`):`兼容多尺寸：${selectedIcoSizes().join('/')||'16/32/48/256'}（会重采样）`;
+    $('#outputInfo').innerHTML=`统一输出：<b>${outW} × ${outH}</b> px　｜　内容居中：<b>${centerOn()?'开启':'关闭'}</b>　｜　背景：<b>${$('#bgMode').value==='transparent'?'透明 Alpha':'纯色 '+$('#bgColor').value}</b>　｜　默认 PNG 内容缩放：<b>0 次</b>　｜　ICO：<b>${icoText}</b>`;
   }
 
-  function downloadCanvas(c,name){c.toBlob(blob=>{if(!blob)return;const a=document.createElement('a'),u=URL.createObjectURL(blob);a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500);},'image/png');}
-
-  // ZIP 打包逻辑位于 zip.js。
-  function canvasBytes(c){return new Promise(res=>c.toBlob(async b=>res(new Uint8Array(await b.arrayBuffer())),'image/png'));}
-  async function downloadZip(){
-    const {rects,outW,outH}=outputRects(),files=[];
-    for(let i=0;i<rects.length;i++){const c=makeOutputCanvas(rects[i],outW,outH);files.push({name:`${sourceName}-${String(i+1).padStart(2,'0')}.png`,data:await canvasBytes(c)});}
-    const blob=PNGSplitterZip.makeZip(files),a=document.createElement('a'),u=URL.createObjectURL(blob);a.href=u;a.download=`${sourceName}-split-${files.length}.zip`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2500);
+  async function downloadAll(){
+    const {items,outW,outH,pad}=outputPlan(),files=[],mode=exportMode();
+    if(!items.length){alert('没有可输出的非空图块。');return;}
+    if((mode==='ico'||mode==='both')&&icoMode()==='strict'&&Math.max(outW,outH)>256){
+      if(mode==='ico'){alert(`严格无损 ICO 不可生成：当前方形画布 ${Math.max(outW,outH)}px > 256px。请继续使用无损 PNG，或主动切换到“兼容多尺寸”模式。`);return;}
+      alert('当前尺寸超过 256px，严格无损 ICO 将跳过；本次仍会输出无损 PNG。');
+    }
+    for(let i=0;i<items.length;i++){
+      const n=String(i+1).padStart(2,'0'),base=`${sourceName}-${n}`,c=makeOutputCanvas(items[i],outW,outH,pad);
+      if(mode==='png'||mode==='both')files.push({name:`${base}.png`,data:await canvasBytes(c)});
+      if(mode==='ico'||mode==='both'){
+        if(icoMode()==='strict'&&Math.max(outW,outH)>256)continue;
+        const ico=await buildIco(c);files.push({name:`${base}${ico.lossless?'':'-compat'}.ico`,data:new Uint8Array(await ico.blob.arrayBuffer())});
+      }
+    }
+    if(files.length===1){const f=files[0];saveBlob(new Blob([f.data],{type:f.name.endsWith('.ico')?'image/x-icon':'image/png'}),f.name);return;}
+    saveBlob(PNGSplitterBinary.makeZip(files),`${sourceName}-split-${items.length}.zip`);
   }
 
   drop.addEventListener('click',()=>fileInput.click());fileInput.addEventListener('change',e=>loadFile(e.target.files[0]));
-  ['dragenter','dragover'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.add('drag')}));['dragleave','drop'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.remove('drag')}));drop.addEventListener('drop',e=>loadFile(e.dataTransfer.files[0]));
-  $('#autoSplit').onclick=()=>{autoDetectSplits();drawEditor();renderAll();};$('#halfSplit').onclick=setHalf;$('#splitMode').onclick=()=>setMode(mode==='split'?'none':'split');$('#clearSplits').onclick=()=>{splits=[];updateSplitUI();drawEditor();renderAll();};
-  $('#autoText').onclick=autoRemoveText;$('#rectErase').onclick=()=>setMode(mode==='rect'?'none':'rect');$('#brushErase').onclick=()=>setMode(mode==='brush'?'none':'brush');$('#undo').onclick=restoreUndo;$('#restore').onclick=()=>{if(!originalData)return;workingData=cloneImageData(originalData);undoStack=[];rebuildAfterEdit(true);setMode('none');};
-  $('#alphaNoise').onchange=()=>{autoDetectSplits();drawEditor();renderAll();};$('#minGap').onchange=()=>{autoDetectSplits();drawEditor();renderAll();};$('#trim').onchange=renderAll;$('#padding').oninput=renderAll;$('#bgMode').onchange=()=>{$('#colorWrap').classList.toggle('hidden',$('#bgMode').value!=='solid');renderAll();};$('#bgColor').oninput=renderAll;$('#downloadZip').onclick=downloadZip;
+  ['dragenter','dragover'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.add('drag')}));
+  ['dragleave','drop'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.remove('drag')}));drop.addEventListener('drop',e=>loadFile(e.dataTransfer.files[0]));
+
+  $('#autoSplitX').onclick=()=>{autoDetectX();drawEditor();renderAll();};
+  $('#autoGrid').onclick=autoDetectGrid;$('#halfSplit').onclick=setHalf;
+  $('#splitXMode').onclick=()=>setMode(mode==='splitX'?'none':'splitX');$('#splitYMode').onclick=()=>setMode(mode==='splitY'?'none':'splitY');
+  $('#clearSplits').onclick=()=>{splitsX=[];splitsY=[];updateSplitUI();drawEditor();renderAll();};
+  $('#autoText').onclick=autoRemoveText;$('#rectErase').onclick=()=>setMode(mode==='rect'?'none':'rect');$('#brushErase').onclick=()=>setMode(mode==='brush'?'none':'brush');
+  $('#undo').onclick=restoreUndo;$('#restore').onclick=()=>{if(!originalData)return;workingData=cloneImageData(originalData);undoStack=[];autoDetectX();rebuildAfterEdit(false);setMode('none');};
+  $('#alphaNoise').onchange=()=>{autoDetectX();drawEditor();renderAll();};$('#minGap').onchange=()=>{autoDetectX();drawEditor();renderAll();};
+  $('#trim').onchange=renderAll;$('#centerContent').onchange=renderAll;$('#padding').oninput=renderAll;
+  $('#bgMode').onchange=()=>{$('#colorWrap').classList.toggle('hidden',$('#bgMode').value!=='solid');renderAll();};$('#bgColor').oninput=renderAll;
+  $('#exportMode').onchange=()=>{updateIcoUI();renderAll();};$('#icoMode').onchange=renderAll;document.querySelectorAll('.icoSize').forEach(e=>e.onchange=renderAll);
+  $('#downloadAll').onclick=downloadAll;
 })();
