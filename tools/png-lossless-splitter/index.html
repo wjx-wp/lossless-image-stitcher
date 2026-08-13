@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PNG 无损智能分割器 v2.0</title>
+<link rel="stylesheet" href="style.css" />
+
+</head>
+<body>
+<div class="wrap">
+  <h1>PNG 无损智能分割器 <span style="font-size:14px;color:#2563eb">v2.0</span></h1>
+  <div class="sub">自动识别 2 个、3 个或更多横向图块；可智能删除底部文字、手动矩形/画笔擦除，并统一输出相同尺寸。透明输出时不缩放、不重采样、不重算原边缘 Alpha。</div>
+
+  <div class="card">
+    <div id="drop" class="drop">
+      <strong>把透明 PNG 拖到这里</strong><br><span style="color:#687386">或点击选择 PNG（全部处理在本机浏览器完成，不上传）</span>
+      <input id="file" type="file" accept="image/png" />
+    </div>
+  </div>
+
+  <div id="work" class="hidden">
+    <div class="card">
+      <div class="sectionTitle"><h2>① 分割与编辑</h2><span class="small">剩余图像像素原位保留</span></div>
+      <div class="toolbar">
+        <div class="group">
+          <button id="autoSplit" class="primary">自动识别多个分割</button>
+          <button id="halfSplit">严格 2 等分</button>
+          <button id="splitMode">手动加分割线</button>
+          <button id="clearSplits">清空分割线</button>
+        </div>
+        <div class="group">
+          <label>最小透明间隙 <input id="minGap" type="number" min="2" max="1000" value="24"> px</label>
+          <label><input id="alphaNoise" type="checkbox" checked> 检测时忽略 Alpha ≤ 2 噪点</label>
+        </div>
+        <div class="group">
+          <button id="autoText" class="danger">智能删除底部文字</button>
+          <button id="rectErase">矩形删除</button>
+          <button id="brushErase">画笔删除</button>
+          <label>画笔 <input id="brushSize" type="number" min="1" max="500" value="28"> px</label>
+          <button id="undo">撤销</button>
+          <button id="restore">恢复原图</button>
+        </div>
+      </div>
+      <div id="splitList" class="splitList"></div>
+      <div id="stats" class="stats"></div>
+      <div class="editorWrap">
+        <div class="editorHead"><b>原图编辑区</b><span id="modeTip" class="small">普通预览模式</span></div>
+        <div class="checker"><canvas id="editor"></canvas></div>
+      </div>
+      <div class="tips">
+        <b>删除文字：</b>“智能删除底部文字”不是 OCR，它会在每个分区里寻找“图标与底部说明文字之间”的整行透明空隙，再把空隙下方像素设为透明；可立即撤销。<br>
+        <b>任意删除：</b>矩形删除或画笔删除只修改选中的 Alpha，不会重新采样其余像素。请避免擦到图标本体，否则被切到的位置会形成你主动造成的硬边。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sectionTitle"><h2>② 统一输出</h2><span class="small">所有分区使用同一个最终画布尺寸</span></div>
+      <div class="toolbar">
+        <div class="group"><label><input id="trim" type="checkbox" checked> 自动裁透明空白并居中补齐</label><label>统一留白 <input id="padding" type="number" min="0" max="1000" value="24"> px</label></div>
+        <div class="group">
+          <label>背景
+            <select id="bgMode"><option value="transparent">保持透明</option><option value="solid">纯色背景</option></select>
+          </label>
+          <label id="colorWrap" class="hidden">颜色 <input id="bgColor" type="color" value="#ffffff"></label>
+        </div>
+        <div class="group"><button id="downloadZip" class="good">下载全部 ZIP</button></div>
+      </div>
+      <div id="outputInfo" class="stats"></div>
+      <div id="previews" class="previewGrid"></div>
+      <div class="notice"><b>无损硬规则：</b>透明模式下，程序使用 <code>getImageData / putImageData</code> 原位复制 RGBA；不会对内容做缩放、锐化、羽化或重新抠图。纯色背景模式只做同尺寸 Alpha 合成，因此几何边缘位置不变。</div>
+      <div class="notice warn"><b>说明：</b>“统一尺寸”指统一透明/纯色画布，不会强行把每个图标拉伸成同样大小。拉伸必然需要重采样，与“不要改变图片质量”这个要求冲突。</div>
+    </div>
+  </div>
+</div>
+
+<script src="zip.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
