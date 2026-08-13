@@ -3,14 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>PNG 无损智能分割器 v2.0</title>
+<title>PNG 无损智能分割器 v2.2</title>
 <link rel="stylesheet" href="style.css" />
-
 </head>
 <body>
 <div class="wrap">
-  <h1>PNG 无损智能分割器 <span style="font-size:14px;color:#2563eb">v2.0</span></h1>
-  <div class="sub">自动识别 2 个、3 个或更多横向图块；可智能删除底部文字、手动矩形/画笔擦除，并统一输出相同尺寸。透明输出时不缩放、不重采样、不重算原边缘 Alpha。</div>
+  <h1>PNG 无损智能分割器 <span style="font-size:14px;color:#2563eb">v2.2</span></h1>
+  <div class="sub">支持横向多图与二维网格自动切图；默认无损 PNG；输出内容可自动上下左右居中（默认开启）；ICO 支持严格无损包与兼容多尺寸包。</div>
 
   <div class="card">
     <div id="drop" class="drop">
@@ -21,15 +20,17 @@
 
   <div id="work" class="hidden">
     <div class="card">
-      <div class="sectionTitle"><h2>① 分割与编辑</h2><span class="small">剩余图像像素原位保留</span></div>
+      <div class="sectionTitle"><h2>① 分割与编辑</h2><span class="small">蓝线 = 竖向分割；橙线 = 横向分割</span></div>
       <div class="toolbar">
         <div class="group">
-          <button id="autoSplit" class="primary">自动识别多个分割</button>
-          <button id="halfSplit">严格 2 等分</button>
-          <button id="splitMode">手动加分割线</button>
-          <button id="clearSplits">清空分割线</button>
+          <button id="autoSplitX" class="primary">自动识别横向排列</button>
+          <button id="autoGrid" class="primary">自动识别二维网格</button>
+          <button id="halfSplit">严格左右 2 等分</button>
+          <button id="clearSplits">清空全部分割线</button>
         </div>
         <div class="group">
+          <button id="splitXMode">手动加竖切线</button>
+          <button id="splitYMode">手动加横切线</button>
           <label>最小透明间隙 <input id="minGap" type="number" min="2" max="1000" value="24"> px</label>
           <label><input id="alphaNoise" type="checkbox" checked> 检测时忽略 Alpha ≤ 2 噪点</label>
         </div>
@@ -49,32 +50,67 @@
         <div class="checker"><canvas id="editor"></canvas></div>
       </div>
       <div class="tips">
-        <b>删除文字：</b>“智能删除底部文字”不是 OCR，它会在每个分区里寻找“图标与底部说明文字之间”的整行透明空隙，再把空隙下方像素设为透明；可立即撤销。<br>
-        <b>任意删除：</b>矩形删除或画笔删除只修改选中的 Alpha，不会重新采样其余像素。请避免擦到图标本体，否则被切到的位置会形成你主动造成的硬边。
+        <b>二维网格：</b>会同时寻找贯穿整张图的透明竖向/横向间隙，适合 2×2、3×3、4×4 等图标矩阵；纯空白单元格会自动跳过。若图片下方有说明文字，建议先“智能删除底部文字”再做二维网格识别。<br>
+        <b>删除：</b>自动删除文字、矩形删除和画笔删除都不会重采样其他像素；误删可撤销。
       </div>
     </div>
 
     <div class="card">
-      <div class="sectionTitle"><h2>② 统一输出</h2><span class="small">所有分区使用同一个最终画布尺寸</span></div>
+      <div class="sectionTitle"><h2>② 统一输出</h2><span class="small">默认保持透明 + 无损 PNG</span></div>
       <div class="toolbar">
-        <div class="group"><label><input id="trim" type="checkbox" checked> 自动裁透明空白并居中补齐</label><label>统一留白 <input id="padding" type="number" min="0" max="1000" value="24"> px</label></div>
+        <div class="group">
+          <label><input id="trim" type="checkbox" checked> 自动裁透明空白</label>
+          <label><input id="centerContent" type="checkbox" checked> 输出内容上下左右居中</label>
+          <label>统一留白 <input id="padding" type="number" min="0" max="1000" value="24"> px</label>
+        </div>
         <div class="group">
           <label>背景
             <select id="bgMode"><option value="transparent">保持透明</option><option value="solid">纯色背景</option></select>
           </label>
           <label id="colorWrap" class="hidden">颜色 <input id="bgColor" type="color" value="#ffffff"></label>
         </div>
-        <div class="group"><button id="downloadZip" class="good">下载全部 ZIP</button></div>
+        <div class="group">
+          <label>导出
+            <select id="exportMode">
+              <option value="png" selected>默认：无损 PNG</option>
+              <option value="ico">仅 ICO</option>
+              <option value="both">PNG + ICO</option>
+            </select>
+          </label>
+        </div>
       </div>
+
+      <div id="icoOptions" class="toolbar hidden" style="margin-top:10px">
+        <div class="group">
+          <label>ICO 模式
+            <select id="icoMode">
+              <option value="strict" selected>严格无损：不缩放，只补画布</option>
+              <option value="compat">兼容多尺寸：允许高质量缩放</option>
+            </select>
+          </label>
+        </div>
+        <div class="group">
+          <span class="small">多尺寸：</span>
+          <div class="icoSizes">
+            <label><input class="icoSize" type="checkbox" value="16" checked>16</label>
+            <label><input class="icoSize" type="checkbox" value="32" checked>32</label>
+            <label><input class="icoSize" type="checkbox" value="48" checked>48</label>
+            <label><input class="icoSize" type="checkbox" value="256" checked>256</label>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px"><button id="downloadAll" class="good">下载全部</button></div>
       <div id="outputInfo" class="stats"></div>
       <div id="previews" class="previewGrid"></div>
-      <div class="notice"><b>无损硬规则：</b>透明模式下，程序使用 <code>getImageData / putImageData</code> 原位复制 RGBA；不会对内容做缩放、锐化、羽化或重新抠图。纯色背景模式只做同尺寸 Alpha 合成，因此几何边缘位置不变。</div>
-      <div class="notice warn"><b>说明：</b>“统一尺寸”指统一透明/纯色画布，不会强行把每个图标拉伸成同样大小。拉伸必然需要重采样，与“不要改变图片质量”这个要求冲突。</div>
+      <div class="notice"><b>PNG 无损硬规则：</b>不会缩放、重采样、锐化、羽化或重新抠图；有效内容仍使用原始 RGBA/Alpha 像素。居中只是整数像素平移与补透明/纯色画布。</div>
+      <div class="notice info"><b>ICO 严格无损：</b>不缩小原图。只会把当前结果补成正方形，并可继续补到更大的已选尺寸；小于原图尺寸的 ICO 层会自动跳过。若原图方形边长超过 256px，则严格无损 ICO 不可生成。</div>
+      <div class="notice warn"><b>ICO 兼容模式：</b>为了生成 16/32/48/256 等标准层，会发生缩放重采样，因此它不属于“像素级无损”。只有你主动选择兼容模式时才会启用。</div>
     </div>
   </div>
 </div>
 
-<script src="zip.js"></script>
+<script src="binary.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
